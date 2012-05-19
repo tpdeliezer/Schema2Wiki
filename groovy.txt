@@ -1,0 +1,1 @@
+return 'hello world'<?xml version="1.0"?><schemas><s>core</s><s>cxf</s><s>http</s></schemas>';

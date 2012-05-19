@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns:mulexml="http://www.mulesoft.org/schema/mule/xml" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:jms="http://www.mulesoft.org/schema/mule/jms" xmlns:smtp="http://www.mulesoft.org/schema/mule/smtp" xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:spring="http://www.springframework.org/schema/beans" xmlns:core="http://www.mulesoft.org/schema/mule/core" xmlns:quartz="http://www.mulesoft.org/schema/mule/quartz" xmlns:bpm="http://www.mulesoft.org/schema/mule/bpm" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="EE-3.2.2" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd 
+http://www.mulesoft.org/schema/mule/xml http://www.mulesoft.org/schema/mule/xml/current/mule-xml.xsd 
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd 
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd 
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd 
+http://www.mulesoft.org/schema/mule/smtp http://www.mulesoft.org/schema/mule/smtp/current/mule-smtp.xsd 
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd 
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-3.0.xsd 
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd 
+http://www.mulesoft.org/schema/mule/quartz http://www.mulesoft.org/schema/mule/quartz/current/mule-quartz.xsd 
+http://www.mulesoft.org/schema/mule/bpm http://www.mulesoft.org/schema/mule/bpm/current/mule-bpm.xsd ">
+    <bpm:drools></bpm:drools>
+    <spring:beans>
+        <spring:bean id="propertyPlaceholderConfigurer" class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer" doc:name="Bean">
+            <spring:property name="locations">
+                <spring:list>
+                    <spring:value>classpath:/config.properties</spring:value>
+                </spring:list>
+            </spring:property>
+        </spring:bean>
+        <spring:bean id="readSchemaPageObjectStore" class="org.mule.util.store.SimpleMemoryObjectStore" doc:name="Bean"/>
+        <spring:bean name="NoFactsBean" class="java.util.ArrayList" doc:name="Bean"/>
+    </spring:beans>
+    <jms:activemq-connector name="Active_MQ" brokerURL="${activeMQ.broker.url}" validateConnections="true" doc:name="Active MQ"/>
+    <smtp:gmail-connector name="smtpGmailConnector" contentType="text/plain" fromAddress="${error.email.from}" doc:name="Gmail"/>
+    <http:polling-connector name="PollingHttpConnector" validateConnections="false" pollingFrequency="3600000" checkEtag="true" reuseAddress="true" doc:name="HTTP Polling"/>
+    <mulexml:namespace-manager includeConfigNamespaces="true">  
+        <mulexml:namespace prefix="xsd" uri="http://www.w3.org/2001/XMLSchema"/> 
+    </mulexml:namespace-manager>
+    <flow name="main" doc:name="main" processingStrategy="synchronous">
+        <http:inbound-endpoint address="http://dist.codehaus.org/mule/schema/mule/" encoding="UTF-8" mimeType="text/html" connector-ref="PollingHttpConnector" contentType="text/html" doc:name="Poll Schema Directory"/>
+        <byte-array-to-string-transformer doc:name="Byte Array to String"/>
+        <custom-transformer class="com.mulesoft.se.wikigenerator.transformer.HtmlTransformer" doc:name="To xml: &lt;schema&gt;&lt;s&gt;…"/>
+        <splitter evaluator="xpath" expression="/schemas/s" doc:name="On schema name">
+            <expression-message-info-mapping messageIdExpression="#[xpath:/schemas/s/text()]" correlationIdExpression="#[string:schemas]"/>
+        </splitter>
+        <all doc:name="All">
+            <processor-chain>
+                <flow-ref name="createIndexWiki" doc:name="Invoke createIndexWiki"/>
+            </processor-chain>
+            <processor-chain>
+                <vm:outbound-endpoint exchange-pattern="one-way" path="readSchemaPage" doc:name="Dispatch to readSchemaPage"/>
+            </processor-chain>
+        </all>
+    </flow>
+    <sub-flow name="createIndexWiki" doc:name="createIndexWiki">
+        <expression-transformer evaluator="xpath" expression="fn:concat(/s/text(), ',')" doc:name="To String ,"/>
+        <message-chunk-aggregator failOnTimeout="false" doc:name="By schema name">
+            <expression-message-info-mapping messageIdExpression="#[xpath:/s]" correlationIdExpression="#[string:schemas]"/>
+        </message-chunk-aggregator>
+        <byte-array-to-string-transformer doc:name="Byte Array to String"/>
+        <scripting:transformer doc:name="To Wiki Markup">
+            <scripting:script engine="Groovy">
+                <scripting:text><![CDATA[def template='[SCHEMAS]\n';
+def schemas = message.getPayload().split(',');
+def childElements = '';
+for (schema in schemas) {
+	childElements += '   * [[' + schema + '.xsd]]\n';
+}
+def newMessage = template.replace('[SCHEMAS]', childElements);
+return newMessage;]]></scripting:text>
+            </scripting:script>
+        </scripting:transformer>
+        <file:outbound-endpoint path="${wiki.home}" outputPattern="Schemas.txt" responseTimeout="10000" doc:name="Create Index Wiki Page"/>
+    </sub-flow>
+    <flow name="readSchemaPage" doc:name="readSchemaPage">
+        <vm:inbound-endpoint exchange-pattern="one-way" path="readSchemaPage" doc:name="readSchemaPage"/>
+        <message-properties-transformer scope="invocation" doc:name="Invocation := schemaName">
+            <add-message-property key="schemaName" value="#[xpath:/s/text()]"/>
+        </message-properties-transformer>
+        <choice doc:name="Choice">
+            <when expression="/s/text() = 'core'" evaluator="xpath">
+                <processor-chain>
+                    <http:outbound-endpoint exchange-pattern="request-response" host="www.mulesoft.org" port="80" path="schema/mule/core/3.3/mule.xsd" doc:name="Read Core Schema Page 3.3"/>
+                </processor-chain>
+            </when>
+            <otherwise>
+                <processor-chain>
+                    <first-successful doc:name="First Successful">
+                        <http:outbound-endpoint exchange-pattern="request-response" host="www.mulesoft.org" port="80" path="schema/mule/#[xpath:/s/text()]/3.3/mule-#[xpath:/s/text()].xsd" doc:name="Read Schema Page 3.3"/>
+                        <http:outbound-endpoint exchange-pattern="request-response" host="www.mulesoft.org" port="80" path="schema/mule/#[xpath:/s/text()]/3.2/mule-#[xpath:/s/text()].xsd" doc:name="Read Schema Page 3.2"/>
+                        <http:outbound-endpoint exchange-pattern="request-response" host="www.mulesoft.org" port="80" path="schema/mule/#[xpath:/s/text()]/3.1/mule-#[xpath:/s/text()].xsd" doc:name="Read Schema Page 3.1"/>
+                    </first-successful>
+                </processor-chain>
+            </otherwise>
+        </choice>
+        <byte-array-to-string-transformer doc:name="Byte Array to String"/>
+        <all doc:name="All">
+            <processor-chain>
+                <flow-ref name="createSchemaWiki" doc:name="Invoke createSchemaWiki"/>
+            </processor-chain>
+            <processor-chain>
+                <flow-ref name="transformElements" doc:name="Invoke transformElements"/>
+            </processor-chain>
+        </all>
+    </flow>
+    <sub-flow name="createSchemaWiki" doc:name="createSchemaWiki">
+        <mulexml:xslt-transformer maxIdleTransformers="2" maxActiveTransformers="5" xsl-file="/Users/nialdarbey/MuleStudioEE/workspace/wikigenerator3/src/main/resources/create-schema-wiki.xslt" doc:name="Transform to Wiki Markup">
+            <mulexml:context-property key="namespace" value="#[xpath:/xsd:schema/@targetNamespace]"/>
+            <mulexml:context-property key="schemaName" value="#[header:invocation:schemaName]"/>
+        </mulexml:xslt-transformer>
+        <file:outbound-endpoint path="${wiki.home}" outputPattern="#[header:invocation:schemaName].xsd.txt" responseTimeout="10000" doc:name="Create Schema Wiki"/>
+    </sub-flow>
+    <sub-flow name="transformElements" doc:name="transformElements">
+        <message-properties-transformer scope="invocation" doc:name="Invocation := targetNamespace">
+            <add-message-property key="targetNamespace" value="#[xpath:/xsd:schema/@targetNamespace]"/>
+        </message-properties-transformer>
+        <splitter enableCorrelation="ALWAYS" evaluator="xpath" expression="/xsd:schema/xsd:element | /xsd:schema/xsd:complexType" doc:name="On element">
+            <expression-message-info-mapping messageIdExpression="#[xpath:/xsd:schema/xsd:*[1]/@name]" correlationIdExpression="#[xpath:/xsd:schema/@targetNamespace]"/>
+        </splitter>
+        <bpm:rules rulesDefinition="rules.drl" initialFacts-ref="NoFactsBean"></bpm:rules>
+    </sub-flow>
+    <flow name="createElementWiki" doc:name="createElementWiki">
+        <vm:inbound-endpoint exchange-pattern="one-way" path="queue.elements" responseTimeout="10000" mimeType="text/plain" doc:name="queue.elements"/>
+        <custom-transformer class="com.mulesoft.se.wikigenerator.transformer.ElementSummaryTransformer" doc:name="Transform to Wiki Markup"/>
+        <file:outbound-endpoint path="${wiki.home}" outputPattern="#[header:invocation:elementName].txt" responseTimeout="10000" doc:name="Create Element Wiki"/>
+    </flow>
+</mule>

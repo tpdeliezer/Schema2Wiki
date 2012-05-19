@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:spring="http://www.springframework.org/schema/beans"
+      xmlns:quartz="http://www.mulesoft.org/schema/mule/quartz"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:jms="http://www.mulesoft.org/schema/mule/jms"
+      xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting"
+      xmlns:bpm="http://www.mulesoft.org/schema/mule/bpm"
+      xmlns:client="http://www.mulesoft.org/schema/mule/client"
+    xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/3.2/mule.xsd
+        http://www.mulesoft.org/schema/mule/quartz http://www.mulesoft.org/schema/mule/quartz/3.2/mule-quartz.xsd
+        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/3.2/mule-vm.xsd
+        http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/3.2/mule-jms.xsd
+        http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/3.2/mule-scripting.xsd
+        http://www.mulesoft.org/schema/mule/bpm http://www.mulesoft.org/schema/mule/bpm/3.2/mule-bpm.xsd
+        http://www.mulesoft.org/schema/mule/client http://www.mulesoft.org/schema/mule/client/3.2/mule-client.xsd
+        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-3.0.xsd">
+
+    <bpm:jbpm /> 
+    <bpm:drools />    
+    
+    <!-- Define Warehouses facts bean -->
+    <spring:bean name="NoFactsBean" class="java.util.ArrayList"/>
+    
+    <jms:activemq-connector 
+                    name="jms-connector" 
+                    brokerURL="tcp://localhost:61616" 
+                    disableTemporaryReplyToDestinations="true"/>
+
+    <jms:endpoint name="UnsortedOrders" queue="UnsortedOrders"/>                
+    <jms:endpoint name="WarehouseA" queue="WarehouseA"/>                
+    <jms:endpoint name="WarehouseB" queue="WarehouseB"/>                
+    
+    <vm:endpoint name="DroolsEndpoint" path="drools"/>
+    
+    <flow name="OrdersGenerator">
+        <quartz:inbound-endpoint jobName="eventTimer" repeatInterval="2000">
+            <quartz:event-generator-job>
+                <quartz:payload>123</quartz:payload>
+            </quartz:event-generator-job>
+        </quartz:inbound-endpoint>
+
+        <scripting:component>
+            <scripting:script engine="groovy">
+                <![CDATA[
+                import java.util.Random;
+                
+                def merchants = ["Target", "Wal-Mart", "Costco", "Macys"];
+                Random generator = new Random();
+                
+                com.mulesoft.mule.droolsjbpmexample.Order order = new com.mulesoft.mule.droolsjbpmexample.Order();
+                int idx = generator.nextInt(4);
+                order.setMerchant(merchants[idx]);
+                double weight = generator.nextDouble() * 200.0;
+                order.setWeight(weight);
+                return order;
+                
+                ]]>
+            </scripting:script>    
+        </scripting:component>  
+          
+        <jms:outbound-endpoint ref="UnsortedOrders"/>
+    </flow>                    
+
+    <flow name="jBPMProcess">
+        <composite-source>
+            <vm:inbound-endpoint path="in" exchange-pattern="request-response"/>
+            <jms:inbound-endpoint ref="UnsortedOrders"/>
+        </composite-source>    
+        <!-- TODO streaming="false"Transform XML to object -->
+        <bpm:process processName="WarehouseRouting" processDefinition="warehouse-routing-process.jpdl.xml"/>    
+    </flow>
+    
+    <flow name="DroolsFlow">
+        <vm:inbound-endpoint ref="DroolsEndpoint" exchange-pattern="request-response"/>
+        <bpm:rules rulesDefinition="routingRules.drl" initialFacts-ref="NoFactsBean" />
+        <expression-transformer evaluator="groovy" expression="message.getPayload().getObject()"/>
+    </flow> 
+       
+</mule>

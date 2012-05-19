@@ -1,0 +1,40 @@
+package com.mulesoft.se.wikigenerator.model;
+
+import org.dom4j.Element;
+import org.dom4j.QName;
+import org.dom4j.Attribute;
+import org.dom4j.tree.DefaultDocument;
+import org.mule.MessageExchangePattern;
+import function com.mulesoft.se.wikigenerator.model.RulesHelper.summarise;
+import java.util.Map;
+import java.util.HashMap;
+
+global org.mule.module.bpm.MessageService mule;
+
+dialect "mvel"
+
+rule "When elements and the complexTypes they refer to in their 'type' attribute are found, then wrap them and put them on Mule"
+    lock-on-active
+when
+	$elementDocument : DefaultDocument ( $element : rootElement, $element.qName.name == "element" )
+	$complexTypeDocument : DefaultDocument ( $complexType : rootElement, $complexType.qName.name == "complexType", name == $elementDocument.name )
+	$complexTypeNameAttribute : Attribute ( qName.name == "name" ) from $complexType.attributes	
+	Attribute ( qName.name == "type", value == $complexTypeNameAttribute.value) from $element.attributes
+then
+	ElementSummary elementSummary = new ElementSummary($elementDocument, $complexTypeDocument);
+	Map map = new HashMap();
+	map.put("schemaName", $elementDocument.getName());
+	mule.generateMessage("vm://queue.elements", elementSummary, map, MessageExchangePattern.ONE_WAY);
+end
+
+rule "When elements have no types, we can assume the type is anonymous"
+    lock-on-active
+when
+	$elementDocument : DefaultDocument ( $element : rootElement, $element.qName.name == "element" )
+	not ( Attribute ( qName.name == "type" ) from $element.attributes )
+then
+	ElementSummary elementSummary = new ElementSummary($elementDocument, null);
+	Map map = new HashMap();
+	map.put("schemaName", $elementDocument.getName());
+	mule.generateMessage("vm://queue.elements", elementSummary, map, MessageExchangePattern.ONE_WAY);
+end
